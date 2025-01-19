@@ -1,0 +1,20 @@
+# Application Settings
+app:
+  name: "exchange-address-scraper"
+  version: "1.0.0"
+  
+# RPC Configuration
+solana:
+  url: "<SOLANA_RPC_URL>"
+  api_key: "<SOLANA_API_KEY>"
+  api_type: "<SOLANA_API_TYPE>"
+
+ethereum:
+  url: "<ETHEREUM_RPC_URL>"
+  api_key: "<ETHEREUM_API_KEY>"
+  api_type: "<ETHEREUM_API_TYPE>"
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  file: "app.log"
