@@ -1,6 +1,7 @@
 import yaml
 import logging
 from pathlib import Path
+from utils.deposit_address_repository import DepositAddressRepository
 from utils.address_loader import get_exchange_hot_wallets
 from scrapers.evm_scraper import EVMScraper
 from scrapers.solana_scraper import SolanaScraper
@@ -47,11 +48,18 @@ def main():
 
         # Get latest transactions
         # eth_transactions = eth_scraper.get_latest_transactions()
-        sol_transactions = sol_scraper.parse_blocks()
+        # slot = self.client.get_slot().value 
+        sol_scraper.parse_blocks(start_block_or_slot=315053829)
 
-        # Process transactions as needed
+        # Initialize repository and store deposit addresses
+        deposit_repo = DepositAddressRepository(config.config["storage"]["deposit_addresses_path"])
+        deposit_repo.save_deposit_addresses(sol_scraper.potential_deposit_addresses)
+            
         # logging.info(f"Found {len(eth_transactions)} Ethereum transactions")
-        logging.info(f"Found {len(sol_transactions)} Solana transactions")
+        logging.info(f"Found {len(sol_scraper.potential_deposit_addresses)} potential Solana deposit addresses")
+
+        # Compute metrics
+        sol_scraper.metrics.update_metrics(sol_scraper.potential_deposit_addresses)
 
         logging.info("Application finished")
         
