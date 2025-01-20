@@ -1,0 +1,235 @@
+from solana.rpc.api import Client
+import logging
+from utils.solana_utils import get_associated_token_account
+from .base_scraper import BaseScraper
+from typing import List, Dict, Any
+from solders.pubkey import Pubkey
+from solders.signature import Signature
+import math
+from utils.rate_limiter import RateLimiter
+
+class RateLimitedClient(Client):
+    def __init__(self, *args, rps_limit: int = 1, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.rate_limiter = RateLimiter(rps_limit)
+        
+        # Apply rate limiter to all public methods
+        for attr_name in dir(self):
+            if not attr_name.startswith('_'):  # Only public methods
+                attr = getattr(self, attr_name)
+                if callable(attr):
+                    setattr(self, attr_name, self.rate_limiter(attr))
+
+class SolanaScraper(BaseScraper):
+    def __init__(self, addresses: List[str], config: dict):
+        super().__init__(addresses, "solana")
+        self.client = None
+        self.config = config['solana']
+        self.rps_limit = self.config.get('rps_limit', 1)
+        self.tokens = config['solana']['tokens']
+        self.token_accounts = {}
+        self.potential_deposit_addresses = []
+
+        for token in self.tokens:
+            for exchange, address_list in self.addresses.items():
+                for address in address_list:
+                    token_account = get_associated_token_account(address, token['mint'])
+                    self.token_accounts[token_account] = {
+                        "exchange": exchange,
+                        "wallet": address,
+                        "ticker": token['ticker'],
+                        "mint": token['mint']
+                    }
+
+    def connect(self) -> None:
+        """Connect to Solana node with appropriate authentication"""
+        base_url = self.config['url']
+        api_key = self.config['api_key']
+        
+        # Construct client with appropriate authentication
+        if self.config['api_type'] == 'param':
+            url = f"{base_url}?apiKey={api_key}"
+            self.client = RateLimitedClient(base_url, rps_limit=self.rps_limit)
+        else:  # bearer type
+            headers = {'Authorization': f"Bearer {api_key}"}
+            self.client = RateLimitedClient(base_url, extra_headers=headers, rps_limit=self.rps_limit)
+            
+        try:
+            self.client.get_version()
+        except Exception as e:
+            raise ConnectionError(f"Failed to connect to Solana node: {e}")
+        
+    def get_latest_transactions(self) -> List[Dict[str, Any]]:
+        """Get latest transactions involving watched addresses"""
+        transactions = []
+        rps_limit = self.config.get('rps_limit', 1)
+        
+        for exchange in self.token_accounts.keys():
+            for token_account in self.token_accounts[exchange]:
+                pubkey = Pubkey.from_string(token_account)
+                # Get recent transactions for each address
+                response = self.client.get_signatures_for_address(pubkey)
+                if response.value:
+                    for tx_info in response.value:
+                        tx = self.client.get_transaction(tx_info.signature, max_supported_transaction_version=10)
+                        if tx.value:
+                            transactions.append(self.parse_transaction(tx.value))
+        
+        return transactions
+    
+    def parse_transaction(self, transaction: Dict[str, Any]) -> Dict[str, Any]:
+        """Parse Solana transaction into standard format"""
+        meta = transaction.transaction.meta
+        tx = transaction.transaction.transaction
+        account_keys = tx.message.account_keys
+        return {
+            'hash': tx.signatures,
+            'from': account_keys[0].__str__,
+            'to': account_keys[1].__str__,
+            'value': meta.post_balances[0] - meta.pre_balances[0],
+            'timestamp': transaction.block_time,
+            'chain': 'solana'
+        } 
+    
+    def get_potential_deposit_addresses(self, slot: int):
+        """Get the transactions in a block that involve watched token accounts"""
+        block = self.client.get_block(slot, max_supported_transaction_version=10)
+
+        transactions = []
+        for tx_idx, tx in enumerate(block.value.transactions):
+            # Check if any account key matches our watched token accounts
+            for acc_idx, key in enumerate(tx.transaction.message.account_keys):
+                if str(key) in self.token_accounts.keys():
+                    # Find matching token balance entry
+                    pre_balance = None
+                    post_balance = None
+                    token_info = self.token_accounts[str(key)]
+                    signature_hash = tx.transaction.signatures[0].__str__()
+
+                    signers = [tx.transaction.message.account_keys[0].__str__()]
+                    if len(tx.transaction.signatures) == 2:
+                        signers.append(tx.transaction.message.account_keys[1].__str__())
+
+                    signer_token_accounts = [get_associated_token_account(signer, token_info['mint']) for signer in signers]
+
+                    # Search through pre and post token balances
+                    (credit, debit) = self.compute_token_transfer(acc_idx, tx.meta, token_info['mint'], token_info['wallet'], signers)
+
+                    if not math.isclose(credit, debit, rel_tol=1e-9):
+                        logging.info(f"Skipping tx {signature_hash} at slot {slot} due to credit and debit mismatch: {credit} != {debit}. Not a standard transaction.")
+                        pass
+                    else:
+                        tx_data = {
+                            'potential_deposit_wallets': signers,
+                            'potential_token_accounts': signer_token_accounts,
+                            'transaction': signature_hash,
+                            'transaction_index': tx_idx,
+                            'key_index': acc_idx,
+                            'change': credit,
+                            'block_time': block.value.block_time,
+                            'slot': slot,
+                            'recipient_token_account': str(key),
+                            'token_info': token_info
+                        }
+
+                        logging.info(f"Found potential deposit address {signers} at slot {slot}")
+
+                        self.potential_deposit_addresses.append(tx_data)
+                        break  # Found a match, no need to check other keys
+                    
+    def validate_potential_deposit_addresses(self):
+        """Validate potential deposit addresses"""
+
+        for deposit_data in self.potential_deposit_addresses:
+            for idx, potential_token_account in enumerate(deposit_data['potential_token_accounts']):
+                previous_signatures = self.client.get_signatures_for_address(
+                    Pubkey.from_string(potential_token_account),
+                    before=Signature.from_string(deposit_data['transaction'])
+                )
+
+                sum_of_previous_transfers = 0
+                funding_data = []
+                i = 0
+
+                for signature in previous_signatures.value:
+                    logging.info(f"Getting transaction {signature.signature.__str__()} at slot {signature.slot}")
+
+                    tx = self.client.get_transaction(signature.signature, max_supported_transaction_version=10).value
+                    signers = [tx.transaction.transaction.message.account_keys[0].__str__()]
+                    if len(tx.transaction.transaction.signatures) == 2:
+                            signers.append(tx.transaction.transaction.message.account_keys[1].__str__())
+
+                    (credit, debit) = self.compute_token_transfer(
+                        idx, 
+                        tx.transaction.meta, 
+                        deposit_data['token_info']['mint'], 
+                        deposit_data['potential_deposit_wallets'][idx],
+                        signers
+                    )
+
+                    if not math.isclose(credit, debit, rel_tol=1e-9):
+                        logging.info(f"Skipping tx {signature.signature.__str__()} at slot {tx.slot} due to credit and debit mismatch: {credit} != {debit}. Not a standard transaction.")
+                        pass
+                    else:
+                        signer_token_accounts = [get_associated_token_account(signer, deposit_data['token_info']['mint']) for signer in signers]
+
+                        tx_data = {
+                            'funding_wallets': signers,
+                            'funding_token_accounts': signer_token_accounts,
+                            'transaction': signature.signature.__str__(),
+                            'change': credit,
+                            'block_time': tx.block_time,
+                            'slot': tx.slot
+                        }
+                        funding_data.append(tx_data)
+                        sum_of_previous_transfers += credit
+                    
+                    i += 1
+                    if sum_of_previous_transfers >= deposit_data['change'] or i >= 100:
+                        break
+
+                        
+                deposit_data['funding_data'] = funding_data
+                deposit_data['probability_of_deposit_address'] = sum_of_previous_transfers / deposit_data['change']
+                logging.info(f"Found deposit wallet {deposit_data['potential_deposit_wallets'][idx]} with probability {deposit_data['probability_of_deposit_address']}")
+
+                        
+    def parse_blocks(self):
+        # slot = self.client.get_slot().value
+        slot = 315053829
+
+        self.get_potential_deposit_addresses(slot)
+        self.validate_potential_deposit_addresses()
+        print("asb")
+
+    def compute_token_transfer(self, account_index: int, meta: Dict[str, Any], mint: str, receiving_owner: str, funding_owners: List[str]) -> tuple[float, float]:
+        pre_balance_receiver = 0
+        pre_balance_sender = 0
+        post_balance_receiver = 0
+        post_balance_sender = 0
+
+        for balance in meta.pre_token_balances:
+            if balance.account_index == account_index:
+                # Verify mint and owner match our records
+                assert balance.mint.__str__() == mint, f"Mint mismatch: {balance.mint} != {mint}"
+                assert balance.owner.__str__()  == receiving_owner, f"Owner mismatch: {balance.owner} != {receiving_owner}"
+                pre_balance_receiver = balance.ui_token_amount.ui_amount or 0
+            if balance.owner.__str__() in funding_owners:
+                assert balance.mint.__str__() == mint, f"Mint mismatch: {balance.mint} != {mint}"
+                pre_balance_sender = balance.ui_token_amount.ui_amount or 0
+
+        for balance in meta.post_token_balances:
+            if balance.account_index == account_index:
+                # Verify mint and owner match our records
+                assert balance.mint.__str__()  == mint, f"Mint mismatch: {balance.mint} != {mint}"
+                assert balance.owner.__str__()  == receiving_owner, f"Owner mismatch: {balance.owner} != {receiving_owner}"
+                post_balance_receiver = balance.ui_token_amount.ui_amount or 0
+            if balance.owner.__str__() in funding_owners:
+                assert balance.mint.__str__() == mint, f"Mint mismatch: {balance.mint} != {mint}"
+                post_balance_sender = balance.ui_token_amount.ui_amount or 0
+
+        # Calculate change in token balance
+        credit = post_balance_receiver - pre_balance_receiver
+        debit = pre_balance_sender - post_balance_sender
+
+        return credit, debit
