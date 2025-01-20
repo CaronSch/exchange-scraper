@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any
-from utils.cache import cache_transactions
 from datetime import timedelta
 
 class BaseScraper(ABC):
@@ -13,15 +12,16 @@ class BaseScraper(ABC):
         """Establish connection to blockchain node"""
         pass
 
-    @cache_transactions(cache_duration=timedelta(hours=1))
     @abstractmethod
-    def get_latest_transactions(self) -> List[Dict[str, Any]]:
-        """Fetch and parse recent transactions for monitored addresses"""
+    def get_potential_deposit_addresses(self, block_or_slot: int):
+        """Get the transactions in a block that involve watched token accounts"""
         pass
 
     @abstractmethod
-    def parse_transaction(self, transaction: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse a single transaction into standardized format"""
+    def validate_potential_deposit_addresses(self):
+        """Validate potential deposit addresses and collect funding transactions"""
         pass 
 
-    # TODO: add error handling
+    def parse_blocks(self):
+        """Parse blocks and get potential deposit addresses"""
+        pass

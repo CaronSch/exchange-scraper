@@ -30,33 +30,14 @@ class EVMScraper(BaseScraper):
         if not self.w3.is_connected():
             raise ConnectionError(f"Failed to connect to {self.chain_name} node")
 
-    def get_latest_transactions(self) -> List[Dict[str, Any]]:
-        """Get latest transactions involving watched addresses"""
-        transactions = []
-        latest_block = self.w3.eth.block_number
-        
-        # Respect RPS limit from config
-        rps_limit = self.config.get('rps_limit', 1)
-        blocks_to_scan = 10  # Consider making this configurable
-        
-        # Scan last N blocks
-        for block_number in range(latest_block - blocks_to_scan, latest_block + 1):
-            block = self.w3.eth.get_block(block_number, full_transactions=True)
-            block_timestamp = block.timestamp
-            for tx in block.transactions:
-                if tx['to'] in self.addresses or tx['from'] in self.addresses:
-                    tx_data = self.parse_transaction(tx, block_timestamp)
-                    transactions.append(tx_data)
-        
-        return transactions
+    def get_potential_deposit_addresses(self, block_or_slot: int):
+        """Get the transactions in a block that involve watched token accounts"""
+        pass
 
-    def parse_transaction(self, transaction: Dict[str, Any], block_timestamp: int) -> Dict[str, Any]:
-        """Parse EVM transaction into standard format"""
-        return {
-            'hash': transaction['hash'].hex(),
-            'from': transaction['from'],
-            'to': transaction['to'],
-            'value': self.w3.from_wei(transaction['value'], 'ether'),
-            'timestamp': block_timestamp,
-            'chain': self.chain_name
-        } 
+    def validate_potential_deposit_addresses(self):
+        """Validate potential deposit addresses and collect funding transactions"""
+        pass
+
+    def parse_blocks(self): 
+        """Parse blocks and get potential deposit addresses"""
+        pass

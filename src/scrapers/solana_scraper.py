@@ -38,7 +38,7 @@ class RateLimitedSolanaClient(Client):
                     setattr(self, attr_name, self.rate_limiter(attr))
 
 class SolanaScraper(BaseScraper):
-    def __init__(self, addresses: List[str], config: dict):
+    def __init__(self, addresses: Dict[str, str], config: dict):
         super().__init__(addresses, "solana")
         self.client = None
         self.config = SolanaConfig.from_dict(config['solana'])
@@ -49,12 +49,12 @@ class SolanaScraper(BaseScraper):
         for token in self.config.tokens:
             for exchange, address_list in self.addresses.items():
                 for address in address_list:
-                    token_account = get_associated_token_account(address, token['mint'])
+                    token_account = get_associated_token_account(address, token['address'])
                     self.token_accounts[token_account] = TokenInfo(
                         exchange,
                         address,
                         token['ticker'],
-                        token['mint']
+                        token['address']
                     )
 
     def connect(self) -> None:
@@ -75,41 +75,9 @@ class SolanaScraper(BaseScraper):
         except Exception as e:
             raise ConnectionError(f"Failed to connect to Solana node: {e}")
         
-    def get_latest_transactions(self) -> List[Dict[str, Any]]:
-        """Get latest transactions involving watched addresses"""
-        transactions = []
-        rps_limit = self.config.rps_limit
-        
-        for exchange in self.token_accounts.keys():
-            for token_account in self.token_accounts[exchange]:
-                pubkey = Pubkey.from_string(token_account)
-                # Get recent transactions for each address
-                response = self.client.get_signatures_for_address(pubkey)
-                if response.value:
-                    for tx_info in response.value:
-                        tx = self.client.get_transaction(tx_info.signature, max_supported_transaction_version=10)
-                        if tx.value:
-                            transactions.append(self.parse_transaction(tx.value))
-        
-        return transactions
-    
-    def parse_transaction(self, transaction: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse Solana transaction into standard format"""
-        meta = transaction.transaction.meta
-        tx = transaction.transaction.transaction
-        account_keys = tx.message.account_keys
-        return {
-            'hash': tx.signatures,
-            'from': account_keys[0].__str__,
-            'to': account_keys[1].__str__,
-            'value': meta.post_balances[0] - meta.pre_balances[0],
-            'timestamp': transaction.block_time,
-            'chain': 'solana'
-        } 
-    
-    def get_potential_deposit_addresses(self, slot: int):
+    def get_potential_deposit_addresses(self, block_or_slot: int):
         """Get the transactions in a block that involve watched token accounts"""
-        block = self.client.get_block(slot, max_supported_transaction_version=10)
+        block = self.client.get_block(block_or_slot, max_supported_transaction_version=10)
 
         transactions = []
         for tx_idx, tx in enumerate(block.value.transactions):
@@ -132,7 +100,7 @@ class SolanaScraper(BaseScraper):
                     (credit, debit) = self.compute_token_transfer(acc_idx, tx.meta, token_info.token_address, token_info.wallet, signers)
 
                     if not math.isclose(credit, debit, rel_tol=1e-9):
-                        logging.info(f"Skipping tx {signature_hash} at slot {slot} due to credit and debit mismatch: {credit} != {debit}. Not a standard transaction.")
+                        logging.info(f"Skipping tx {signature_hash} at slot {block_or_slot} due to credit and debit mismatch: {credit} != {debit}. Not a standard transaction.")
                         pass
                     else:
                         tx_data = TransactionData(
@@ -143,76 +111,79 @@ class SolanaScraper(BaseScraper):
                             acc_idx,
                             credit,
                             block.value.block_time,
-                            slot,
+                            block_or_slot,
                             str(key),
                             token_info,
                             [],
                             0.0
                         )
 
-                        logging.info(f"Found potential deposit address {signers} at slot {slot}")
+                        logging.info(f"Found potential deposit address {signers} at slot {block_or_slot}")
 
                         self.potential_deposit_addresses.append(tx_data)
                         break  # Found a match, no need to check other keys
                     
     def validate_potential_deposit_addresses(self):
+        """Validate potential deposit addresses and collect funding transactions"""
         for tx_data in self.potential_deposit_addresses:
             self._validate_potential_deposit_address(tx_data)
 
     def _validate_potential_deposit_address(self, tx_data: TransactionData):
-        """Validate potential deposit addresses"""
-        for idx, potential_token_account in enumerate(tx_data.potential_token_accounts):
-            previous_signatures = self.client.get_signatures_for_address(
-                Pubkey.from_string(potential_token_account),
-                before=Signature.from_string(tx_data.transaction)
-            )
-
-            sum_of_previous_transfers = 0
-            funding_data = []
-            i = 0
-
-            for signature in previous_signatures.value:
-                logging.info(f"Getting transaction {signature.signature.__str__()} at slot {signature.slot}")
-
-                tx = self.client.get_transaction(signature.signature, max_supported_transaction_version=10).value
-                signers = [tx.transaction.transaction.message.account_keys[0].__str__()]
-                if len(tx.transaction.transaction.signatures) == 2:
-                        signers.append(tx.transaction.transaction.message.account_keys[1].__str__())
-
-                (credit, debit) = self.compute_token_transfer(
-                    idx, 
-                    tx.transaction.meta, 
-                    tx_data.token_info.token_address, 
-                    tx_data.potential_deposit_wallets[idx],
-                    signers
+        try:
+            for idx, potential_token_account in enumerate(tx_data.potential_token_accounts):
+                previous_signatures = self.client.get_signatures_for_address(
+                    Pubkey.from_string(potential_token_account),
+                    before=Signature.from_string(tx_data.transaction)
                 )
 
-                if not math.isclose(credit, debit, rel_tol=1e-9):
-                    logging.info(f"Skipping tx {signature.signature.__str__()} at slot {tx.slot} due to credit and debit mismatch: {credit} != {debit}. Not a standard transaction.")
-                    pass
-                else:
-                    signer_token_accounts = [get_associated_token_account(signer, tx_data.token_info.token_address) for signer in signers]
+                sum_of_previous_transfers = 0
+                funding_data = []
+                i = 0
 
-                    tx_funding_data = FundingData(
-                        signers,
-                        signer_token_accounts,
-                        signature.signature.__str__(),
-                        credit,
-                        tx.block_time,
-                        tx.slot
+                for signature in previous_signatures.value:
+                    logging.info(f"Getting transaction {signature.signature.__str__()} at slot {signature.slot}")
+
+                    tx = self.client.get_transaction(signature.signature, max_supported_transaction_version=10).value
+                    signers = [tx.transaction.transaction.message.account_keys[0].__str__()]
+                    if len(tx.transaction.transaction.signatures) == 2:
+                            signers.append(tx.transaction.transaction.message.account_keys[1].__str__())
+
+                    (credit, debit) = self.compute_token_transfer(
+                        idx, 
+                        tx.transaction.meta, 
+                        tx_data.token_info.token_address, 
+                        tx_data.potential_deposit_wallets[idx],
+                        signers
                     )
-                    funding_data.append(tx_funding_data)
-                    sum_of_previous_transfers += credit
-                
-                i += 1
-                if sum_of_previous_transfers >= tx_data.change or i >= 100:
-                    break
 
+                    if not math.isclose(credit, debit, rel_tol=1e-9):
+                        logging.info(f"Skipping tx {signature.signature.__str__()} at slot {tx.slot} due to credit and debit mismatch: {credit} != {debit}. Not a standard transaction.")
+                        pass
+                    else:
+                        signer_token_accounts = [get_associated_token_account(signer, tx_data.token_info.token_address) for signer in signers]
+
+                        tx_funding_data = FundingData(
+                            signers,
+                            signer_token_accounts,
+                            signature.signature.__str__(),
+                            credit,
+                            tx.block_time,
+                            tx.slot
+                        )
+                        funding_data.append(tx_funding_data)
+                        sum_of_previous_transfers += credit
                     
-            tx_data.funding_data.extend(funding_data)
-            tx_data.probability_of_deposit_address = sum_of_previous_transfers / tx_data.change
-            logging.info(f"Found deposit wallet {tx_data.potential_deposit_wallets[idx]} with probability {tx_data.probability_of_deposit_address}")
+                    i += 1
+                    if sum_of_previous_transfers >= tx_data.change or i >= 100:
+                        break
 
+                        
+                tx_data.funding_data.extend(funding_data)
+                tx_data.probability_of_deposit_address = sum_of_previous_transfers / tx_data.change
+                logging.info(f"Found deposit wallet {tx_data.potential_deposit_wallets[idx]} with probability {tx_data.probability_of_deposit_address}")
+        except Exception as e:
+            logging.error(f"Error validating potential deposit address in tx {signature.signature.__str__()}: {str(e)}")
+            pass
                         
     def parse_blocks(self):
         # slot = self.client.get_slot().value
