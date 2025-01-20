@@ -7,6 +7,30 @@ from solders.pubkey import Pubkey
 from solders.signature import Signature
 import math
 from utils.rate_limiter import RateLimiter
+from dataclasses import dataclass
+from datetime import datetime
+
+@dataclass
+class TokenInfo:
+    exchange: str
+    wallet: str
+    ticker: str
+    mint: str
+
+@dataclass
+class TransactionData:
+    potential_deposit_wallets: List[str]
+    potential_token_accounts: List[str]
+    transaction: str
+    transaction_index: int
+    key_index: int
+    change: float
+    block_time: int
+    slot: int
+    recipient_token_account: str
+    token_info: TokenInfo
+    funding_data: List[Dict] = None
+    probability_of_deposit_address: float = 0.0
 
 class RateLimitedClient(Client):
     def __init__(self, *args, rps_limit: int = 1, **kwargs):
@@ -203,33 +227,36 @@ class SolanaScraper(BaseScraper):
         print("asb")
 
     def compute_token_transfer(self, account_index: int, meta: Dict[str, Any], mint: str, receiving_owner: str, funding_owners: List[str]) -> tuple[float, float]:
-        pre_balance_receiver = 0
-        pre_balance_sender = 0
-        post_balance_receiver = 0
-        post_balance_sender = 0
+        """
+        Compute token transfer amounts and validate ownership/mint
+        Returns: (credit, debit) tuple
+        """
+        balances = {
+            'pre_receiver': 0,
+            'pre_sender': 0,
+            'post_receiver': 0,
+            'post_sender': 0
+        }
+
+        def validate_and_get_balance(balance, balance_type: str):
+            assert balance.mint.__str__() == mint, f"Mint mismatch: {balance.mint} != {mint}"
+            if balance_type == 'receiver':
+                assert balance.owner.__str__() == receiving_owner, f"Owner mismatch: {balance.owner} != {receiving_owner}"
+            return balance.ui_token_amount.ui_amount or 0
 
         for balance in meta.pre_token_balances:
             if balance.account_index == account_index:
-                # Verify mint and owner match our records
-                assert balance.mint.__str__() == mint, f"Mint mismatch: {balance.mint} != {mint}"
-                assert balance.owner.__str__()  == receiving_owner, f"Owner mismatch: {balance.owner} != {receiving_owner}"
-                pre_balance_receiver = balance.ui_token_amount.ui_amount or 0
+                balances['pre_receiver'] = validate_and_get_balance(balance, 'receiver')
             if balance.owner.__str__() in funding_owners:
-                assert balance.mint.__str__() == mint, f"Mint mismatch: {balance.mint} != {mint}"
-                pre_balance_sender = balance.ui_token_amount.ui_amount or 0
+                balances['pre_sender'] = validate_and_get_balance(balance, 'sender')
 
         for balance in meta.post_token_balances:
             if balance.account_index == account_index:
-                # Verify mint and owner match our records
-                assert balance.mint.__str__()  == mint, f"Mint mismatch: {balance.mint} != {mint}"
-                assert balance.owner.__str__()  == receiving_owner, f"Owner mismatch: {balance.owner} != {receiving_owner}"
-                post_balance_receiver = balance.ui_token_amount.ui_amount or 0
+                balances['post_receiver'] = validate_and_get_balance(balance, 'receiver')
             if balance.owner.__str__() in funding_owners:
-                assert balance.mint.__str__() == mint, f"Mint mismatch: {balance.mint} != {mint}"
-                post_balance_sender = balance.ui_token_amount.ui_amount or 0
+                balances['post_sender'] = validate_and_get_balance(balance, 'sender')
 
-        # Calculate change in token balance
-        credit = post_balance_receiver - pre_balance_receiver
-        debit = pre_balance_sender - post_balance_sender
+        credit = balances['post_receiver'] - balances['pre_receiver']
+        debit = balances['pre_sender'] - balances['post_sender']
 
         return credit, debit
