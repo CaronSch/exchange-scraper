@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 import pytest
-from scrapers.evm_scraper import EVMScraper
+from src.scrapers.evm_scraper import EVMScraper
 from src.scrapers.solana_scraper import SolanaScraper
 
 # Load test resources

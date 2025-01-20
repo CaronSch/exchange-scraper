@@ -1,9 +1,12 @@
 import yaml
 import logging
 from pathlib import Path
+from scrapers.helpers.data_classes import TransactionData
 from utils.address_loader import get_exchange_hot_wallets
 from scrapers.evm_scraper import EVMScraper
 from scrapers.solana_scraper import SolanaScraper
+import json
+from datetime import datetime
 
 
 class Config:
