@@ -156,60 +156,62 @@ class SolanaScraper(BaseScraper):
                         break  # Found a match, no need to check other keys
                     
     def validate_potential_deposit_addresses(self):
-        """Validate potential deposit addresses"""
-
         for tx_data in self.potential_deposit_addresses:
-            for idx, potential_token_account in enumerate(tx_data.potential_token_accounts):
-                previous_signatures = self.client.get_signatures_for_address(
-                    Pubkey.from_string(potential_token_account),
-                    before=Signature.from_string(tx_data.transaction)
+            self._validate_potential_deposit_address(tx_data)
+
+    def _validate_potential_deposit_address(self, tx_data: TransactionData):
+        """Validate potential deposit addresses"""
+        for idx, potential_token_account in enumerate(tx_data.potential_token_accounts):
+            previous_signatures = self.client.get_signatures_for_address(
+                Pubkey.from_string(potential_token_account),
+                before=Signature.from_string(tx_data.transaction)
+            )
+
+            sum_of_previous_transfers = 0
+            funding_data = []
+            i = 0
+
+            for signature in previous_signatures.value:
+                logging.info(f"Getting transaction {signature.signature.__str__()} at slot {signature.slot}")
+
+                tx = self.client.get_transaction(signature.signature, max_supported_transaction_version=10).value
+                signers = [tx.transaction.transaction.message.account_keys[0].__str__()]
+                if len(tx.transaction.transaction.signatures) == 2:
+                        signers.append(tx.transaction.transaction.message.account_keys[1].__str__())
+
+                (credit, debit) = self.compute_token_transfer(
+                    idx, 
+                    tx.transaction.meta, 
+                    tx_data.token_info.token_address, 
+                    tx_data.potential_deposit_wallets[idx],
+                    signers
                 )
 
-                sum_of_previous_transfers = 0
-                funding_data = []
-                i = 0
+                if not math.isclose(credit, debit, rel_tol=1e-9):
+                    logging.info(f"Skipping tx {signature.signature.__str__()} at slot {tx.slot} due to credit and debit mismatch: {credit} != {debit}. Not a standard transaction.")
+                    pass
+                else:
+                    signer_token_accounts = [get_associated_token_account(signer, tx_data.token_info.token_address) for signer in signers]
 
-                for signature in previous_signatures.value:
-                    logging.info(f"Getting transaction {signature.signature.__str__()} at slot {signature.slot}")
-
-                    tx = self.client.get_transaction(signature.signature, max_supported_transaction_version=10).value
-                    signers = [tx.transaction.transaction.message.account_keys[0].__str__()]
-                    if len(tx.transaction.transaction.signatures) == 2:
-                            signers.append(tx.transaction.transaction.message.account_keys[1].__str__())
-
-                    (credit, debit) = self.compute_token_transfer(
-                        idx, 
-                        tx.transaction.meta, 
-                        tx_data.token_info.token_address, 
-                        tx_data.potential_deposit_wallets[idx],
-                        signers
+                    tx_funding_data = FundingData(
+                        signers,
+                        signer_token_accounts,
+                        signature.signature.__str__(),
+                        credit,
+                        tx.block_time,
+                        tx.slot
                     )
+                    funding_data.append(tx_funding_data)
+                    sum_of_previous_transfers += credit
+                
+                i += 1
+                if sum_of_previous_transfers >= tx_data.change or i >= 100:
+                    break
 
-                    if not math.isclose(credit, debit, rel_tol=1e-9):
-                        logging.info(f"Skipping tx {signature.signature.__str__()} at slot {tx.slot} due to credit and debit mismatch: {credit} != {debit}. Not a standard transaction.")
-                        pass
-                    else:
-                        signer_token_accounts = [get_associated_token_account(signer, tx_data.token_info.token_address) for signer in signers]
-
-                        tx_funding_data = FundingData(
-                            signers,
-                            signer_token_accounts,
-                            signature.signature.__str__(),
-                            credit,
-                            tx.block_time,
-                            tx.slot
-                        )
-                        funding_data.append(tx_funding_data)
-                        sum_of_previous_transfers += credit
                     
-                    i += 1
-                    if sum_of_previous_transfers >= tx_data.change or i >= 100:
-                        break
-
-                        
-                tx_data.funding_data.extend(funding_data)
-                tx_data.probability_of_deposit_address = sum_of_previous_transfers / tx_data.change
-                logging.info(f"Found deposit wallet {tx_data.potential_deposit_wallets[idx]} with probability {tx_data.probability_of_deposit_address}")
+            tx_data.funding_data.extend(funding_data)
+            tx_data.probability_of_deposit_address = sum_of_previous_transfers / tx_data.change
+            logging.info(f"Found deposit wallet {tx_data.potential_deposit_wallets[idx]} with probability {tx_data.probability_of_deposit_address}")
 
                         
     def parse_blocks(self):
@@ -218,7 +220,7 @@ class SolanaScraper(BaseScraper):
 
         self.get_potential_deposit_addresses(slot)
         self.validate_potential_deposit_addresses()
-        self.metrics.update_metrics()
+        self.metrics.update_metrics(self.potential_deposit_addresses)
 
     def compute_token_transfer(self, account_index: int, meta: Dict[str, Any], mint: str, receiving_owner: str, funding_owners: List[str]) -> tuple[float, float]:
         """
