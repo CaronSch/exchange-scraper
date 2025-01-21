@@ -111,14 +111,13 @@ class SolanaScraper(BaseScraper):
 
                         # Search through pre and post token balances
                         (credit, debit) = self.compute_token_transfer(
-                            acc_idx, 
                             tx.meta, 
                             token_info.token_address, 
                             token_info.wallet, 
                             signer
                         )
 
-                        if not math.isclose(credit, debit, rel_tol=1e-6):
+                        if not math.isclose(credit, debit, rel_tol=1e-2):
                             logging.info(f"Skipping tx {signature_hash} at slot {block_or_slot} due to credit and debit mismatch: {credit} != {debit}. Not a standard transaction.")
                             continue
                         else:
@@ -211,26 +210,24 @@ class SolanaScraper(BaseScraper):
         account_index = tx_data.signature_index
         
 
-        try:
-            signer = tx.transaction.message.account_keys[0].__str__()
-            (credit, debit) = self.compute_token_transfer(
-                account_index, 
-                tx.meta, 
-                tx_data.token_info.token_address, 
-                tx_data.deposit_wallet,
-                signer
-            )
-        except Exception as e:
+        signer = tx.transaction.message.account_keys[0].__str__()
+        (credit, debit) = self.compute_token_transfer(
+            tx.meta, 
+            tx_data.token_info.token_address, 
+            tx_data.deposit_wallet,
+            signer
+        )
+
+        if credit == 0 or debit == 0:
             signer = tx.transaction.message.account_keys[1].__str__()
             (credit, debit) = self.compute_token_transfer(
-                account_index, 
                 tx.meta, 
                 tx_data.token_info.token_address, 
                 tx_data.deposit_wallet,
                 signer
             )
 
-        if not math.isclose(credit, debit, rel_tol=1e-9):
+        if not math.isclose(credit, debit, rel_tol=1e-2):
             logging.info(f"Skipping tx {sig} at slot {block_or_slot} due to credit and debit mismatch: {credit} != {debit}. Not a standard transaction.")
             return None
         else:
@@ -248,7 +245,6 @@ class SolanaScraper(BaseScraper):
 
     def compute_token_transfer(
             self, 
-            account_index: int, 
             meta: Dict[str, Any], 
             mint: str, 
             receiving_owner: str, 
@@ -268,18 +264,16 @@ class SolanaScraper(BaseScraper):
         def validate_and_get_balance(balance, balance_type: str):
             """Double-check that these are actually the token balances we are targeting"""
             assert balance.mint.__str__() == mint, f"Mint mismatch: {balance.mint} != {mint}"
-            if balance_type == 'receiver':
-                assert balance.owner.__str__() == receiving_owner, f"Owner mismatch: {balance.owner} != {receiving_owner}"
             return balance.ui_token_amount.ui_amount or 0
 
         for balance in meta.pre_token_balances:
-            if balance.account_index == account_index:
+            if balance.owner.__str__() in receiving_owner:
                 balances['pre_receiver'] = validate_and_get_balance(balance, 'receiver')
             if balance.owner.__str__() in funding_owner:
                 balances['pre_sender'] = validate_and_get_balance(balance, 'sender')
 
         for balance in meta.post_token_balances:
-            if balance.account_index == account_index:
+            if balance.owner.__str__() in receiving_owner:
                 balances['post_receiver'] = validate_and_get_balance(balance, 'receiver')
             if balance.owner.__str__() in funding_owner:
                 balances['post_sender'] = validate_and_get_balance(balance, 'sender')

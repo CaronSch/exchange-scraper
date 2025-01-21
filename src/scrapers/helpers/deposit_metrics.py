@@ -7,6 +7,8 @@ from typing import Dict, List
 from .data_classes import TransactionData
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+import networkx as nx
+import numpy as np
 
 class DepositMetrics:
     def __init__(self):
@@ -39,6 +41,7 @@ class DepositMetrics:
         """
         aggregated_stats = {}
         time_series_stats = {}
+        deposit_mapping = {}
         
         for deposit in deposit_data:
             if deposit['probability_of_deposit_address'] < 0.8:
@@ -120,7 +123,14 @@ class DepositMetrics:
                         timestamp: fund_tx['change']
                     }
 
-        return aggregated_stats, time_series_stats
+            # Map deposit wallets to their funding wallets
+            deposit_wallet = deposit['deposit_wallet']
+            funding_wallets = [funding_tx['wallet'] for funding_tx in deposit['funding_data']]
+            if deposit_wallet in deposit_mapping:
+                deposit_mapping[deposit_wallet] = list(set(deposit_mapping[deposit_wallet] + funding_wallets))
+            else:
+                deposit_mapping[deposit_wallet] = list(set(funding_wallets))
+        return aggregated_stats, time_series_stats, deposit_mapping
 
 
     def format_funding_volume(self, aggregated_volume: dict) -> str:
@@ -231,10 +241,149 @@ class DepositMetrics:
         
         plt.close()
 
-"""
-    * transaction volume
-    * Number of unique senders
-    * Average time between deposits
-    * Forward destination analysis
-    * Balance patterns
-"""
+    def plot_wallet_network(self, deposit_mapping: Dict[str, List[str]], top_deposits: List[dict], save_path: str = None, max_nodes: int = 50):
+        """
+        Creates a network visualization of deposit wallets and their funding addresses.
+        
+        Args:
+            deposit_mapping: Dictionary mapping deposit wallets to lists of funding wallets
+            top_deposits: List of top deposits to prioritize in visualization
+            save_path: Optional path to save the plot. If None, displays the plot
+            max_nodes: Maximum number of deposit wallets to display to prevent overcrowding
+        """
+        # Create a new graph
+        G = nx.Graph()
+        
+        # First, add nodes from top_deposits
+        prioritized_wallets = [d['deposit_wallet'] for d in top_deposits]
+        
+        # Then add other wallets up to max_nodes
+        remaining_slots = max_nodes - len(prioritized_wallets)
+        if remaining_slots > 0:
+            other_wallets = [w for w in deposit_mapping.keys() 
+                            if w not in prioritized_wallets][:remaining_slots]
+            deposit_wallets = prioritized_wallets + other_wallets
+        else:
+            deposit_wallets = prioritized_wallets[:max_nodes]
+        
+        # Add nodes and edges
+        for deposit_wallet in deposit_wallets:
+            if deposit_wallet not in deposit_mapping:
+                continue
+            
+            # Add deposit wallet node with special color for top deposits
+            is_top = deposit_wallet in prioritized_wallets
+            G.add_node(deposit_wallet[:8] + "...", 
+                       node_type="deposit",
+                       is_top=is_top)  # Truncate address for readability
+            
+            # Add funding wallet nodes and edges
+            for funding_wallet in deposit_mapping[deposit_wallet][:5]:  # Limit to 5 funding wallets per deposit
+                funding_id = funding_wallet[:8] + "..."
+                G.add_node(funding_id, node_type="funding")
+                G.add_edge(deposit_wallet[:8] + "...", funding_id)
+        
+        plt.figure(figsize=(15, 10))
+        
+        # Create layout
+        pos = nx.spring_layout(G, k=1, iterations=50)
+        
+        # Draw nodes with different colors for top deposits
+        top_deposit_nodes = [node for node, attr in G.nodes(data=True) 
+                            if attr.get("node_type") == "deposit" and attr.get("is_top")]
+        other_deposit_nodes = [node for node, attr in G.nodes(data=True) 
+                              if attr.get("node_type") == "deposit" and not attr.get("is_top")]
+        funding_nodes = [node for node, attr in G.nodes(data=True) 
+                        if attr.get("node_type") == "funding"]
+        
+        # Draw top deposit nodes in red
+        nx.draw_networkx_nodes(G, pos, 
+                              nodelist=top_deposit_nodes,
+                              node_color='lightcoral',
+                              node_size=1200,
+                              alpha=0.7,
+                              label='Top Deposit Wallets')
+        
+        # Draw other deposit nodes in blue
+        nx.draw_networkx_nodes(G, pos, 
+                              nodelist=other_deposit_nodes,
+                              node_color='lightblue',
+                              node_size=1000,
+                              alpha=0.7,
+                              label='Other Deposit Wallets')
+        
+        # Draw funding nodes in green
+        nx.draw_networkx_nodes(G, pos,
+                              nodelist=funding_nodes,
+                              node_color='lightgreen',
+                              node_size=700,
+                              alpha=0.7,
+                              label='Funding Wallets')
+        
+        # Draw edges
+        nx.draw_networkx_edges(G, pos, alpha=0.4)
+        
+        # Add labels
+        nx.draw_networkx_labels(G, pos, font_size=8)
+        
+        plt.title('Wallet Relationship Network\n(Deposit Wallets and Their Funding Sources)')
+        plt.legend()
+        plt.axis('off')
+        
+        # Adjust layout to prevent label cutoff
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, bbox_inches='tight')
+            logging.info(f"Network plot saved to {save_path}")
+        else:
+            plt.show()
+        
+        plt.close()
+
+    def plot_top_deposits(self, top_deposits: List[dict], save_path: str = None):
+        """
+        Creates a bar chart of top deposits by volume.
+        
+        Args:
+            top_deposits: List of deposit dictionaries sorted by change value
+            save_path: Optional path to save the plot. If None, displays the plot
+        """
+        plt.figure(figsize=(15, 8))
+        
+        # Extract data for plotting
+        wallets = [d['deposit_wallet'][:8] + "..." for d in top_deposits]  # Truncate for readability
+        volumes = [d['change'] for d in top_deposits]
+        colors = [plt.cm.viridis(i/len(top_deposits)) for i in range(len(top_deposits))]  # Color gradient
+        
+        # Create bar chart
+        bars = plt.bar(range(len(wallets)), volumes, color=colors)
+        
+        # Customize the plot
+        plt.title('Top Deposit Volumes by Wallet')
+        plt.xlabel('Deposit Wallet Address')
+        plt.ylabel('Volume')
+        
+        # Rotate x-axis labels for better readability
+        plt.xticks(range(len(wallets)), wallets, rotation=45, ha='right')
+        
+        # Add value labels on top of each bar
+        for bar in bars:
+            height = bar.get_height()
+            plt.text(bar.get_x() + bar.get_width()/2., height,
+                    f'{height:,.0f}',
+                    ha='center', va='bottom')
+        
+        # Add grid for better readability
+        plt.grid(True, axis='y', alpha=0.3)
+        
+        # Adjust layout to prevent label cutoff
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, bbox_inches='tight')
+            logging.info(f"Top deposits plot saved to {save_path}")
+        else:
+            plt.show()
+        
+        plt.close()

@@ -35,6 +35,7 @@ jsonalias==0.1.1
 kiwisolver==1.4.8
 matplotlib==3.10.0
 multidict==6.1.0
+networkx==3.4.2
 numpy==2.2.2
 packaging==24.2
 parsimonious==0.10.0
