@@ -1,5 +1,5 @@
-from solana.rpc.api import Client
 import logging
+from solana.rpc.api import Client
 from scrapers.helpers.deposit_metrics import DepositMetrics
 from scrapers.helpers.data_classes import FundingData, TokenInfo, TransactionData
 from utils.solana_utils import get_associated_token_account
@@ -16,6 +16,8 @@ from datetime import datetime
 
 @dataclass
 class SolanaConfig:
+    start_block: int
+    blocks_to_parse: int
     url: str
     api_key: str
     api_type: str
@@ -39,7 +41,7 @@ class RateLimitedSolanaClient(Client):
                     setattr(self, attr_name, self.rate_limiter(attr))
 
 class SolanaScraper(BaseScraper):
-    def __init__(self, addresses: Dict[str, str], config: dict):
+    def __init__(self, addresses: Dict[str, str], config: dict, logging: logging):
         super().__init__(addresses, "solana")
         self.client = None
         self.config = SolanaConfig.from_dict(config['solana'])
@@ -76,11 +78,14 @@ class SolanaScraper(BaseScraper):
         except Exception as e:
             raise ConnectionError(f"Failed to connect to Solana node: {e}")
         
-    def parse_blocks(self, start_block_or_slot: int, blocks_to_parse: int = 10):
+    def parse_blocks(self):
         """Parse a range of blocks and compute metrics from deposit addresses"""
-        for block in range(start_block_or_slot, start_block_or_slot + blocks_to_parse):
+        start_slot = self.config.start_block or self.client.get_slot().value
+        blocks_to_parse = self.config.blocks_to_parse or 10
+
+        for block in range(start_slot, start_slot + blocks_to_parse):
             logging.info(f"Parsing block {block}")
-            potential_deposit_addresses = self.get_potential_deposit_addresses(start_block_or_slot)
+            potential_deposit_addresses = self.get_potential_deposit_addresses(block)
             self.validate_potential_deposit_addresses(potential_deposit_addresses)
         
     def get_potential_deposit_addresses(self, block_or_slot: int) -> List[TransactionData]:
@@ -92,9 +97,6 @@ class SolanaScraper(BaseScraper):
             # Check if any account key matches our watched token accounts
             for acc_idx, key in enumerate(tx.transaction.message.account_keys):
                 if str(key) in self.token_accounts.keys():
-                    # Find matching token balance entry
-                    pre_balance = None
-                    post_balance = None
                     token_info = self.token_accounts[str(key)]
                     signature_hash = tx.transaction.signatures[0].__str__()
 
@@ -104,29 +106,37 @@ class SolanaScraper(BaseScraper):
 
                     signer_token_accounts = [get_associated_token_account(signer, token_info.token_address) for signer in signers]
 
-                    # Search through pre and post token balances
-                    (credit, debit) = self.compute_token_transfer(acc_idx, tx.meta, token_info.token_address, token_info.wallet, signers)
+                    for signature_idx, token_account in enumerate(signer_token_accounts):
+                        signer = signers[signature_idx]
 
-                    if not math.isclose(credit, debit, rel_tol=1e-9):
-                        logging.info(f"Skipping tx {signature_hash} at slot {block_or_slot} due to credit and debit mismatch: {credit} != {debit}. Not a standard transaction.")
-                        pass
-                    else:
-                        for signature_idx, token_account in enumerate(signer_token_accounts):
+                        # Search through pre and post token balances
+                        (credit, debit) = self.compute_token_transfer(
+                            acc_idx, 
+                            tx.meta, 
+                            token_info.token_address, 
+                            token_info.wallet, 
+                            signer
+                        )
+
+                        if not math.isclose(credit, debit, rel_tol=1e-6):
+                            logging.info(f"Skipping tx {signature_hash} at slot {block_or_slot} due to credit and debit mismatch: {credit} != {debit}. Not a standard transaction.")
+                            continue
+                        else:
                             tx_data = TransactionData(
-                                    signers[signature_idx],
-                                    token_account,
-                                    signature_idx,
-                                    signature_hash,
-                                    tx_idx,
-                                    acc_idx,
-                                    credit,
-                                    block.value.block_time,
-                                    block_or_slot,
-                                    str(key),
-                                    token_info,
-                                    [],
-                                    0.0
-                                )
+                                signer,
+                                token_account,
+                                signature_idx,
+                                signature_hash,
+                                tx_idx,
+                                acc_idx,
+                                credit,
+                                block.value.block_time,
+                                block_or_slot,
+                                str(key),
+                                token_info,
+                                [],
+                                0.0
+                            )
                             
                             already_parsed_accounts = [existing_token_account.deposit_token_account for existing_token_account in self.potential_deposit_addresses]
                             
@@ -143,12 +153,11 @@ class SolanaScraper(BaseScraper):
 
     def handle_existing_deposit_address(self, tx: Transaction, block_or_slot: int, block_time: int, idx: int, tx_data: TransactionData):
         """Handle existing deposit addresses by finding additional funding transactions"""
-        sig = tx.transaction.signatures[0].__str__()
+        sig = tx.transaction.signatures[tx_data.signature_index].__str__()
         tx_funding_data = self._process_transactions(sig, tx, block_or_slot, block_time, tx_data, False)
                 
         if tx_funding_data is not None:
             self.potential_deposit_addresses[idx].funding_data.append(tx_funding_data)
-            sum_of_previous_transfers += tx_funding_data.change
         
     def validate_potential_deposit_addresses(self, potential_deposit_addresses: List[TransactionData]):
         """Validate potential deposit addresses and collect funding transactions"""
@@ -186,7 +195,8 @@ class SolanaScraper(BaseScraper):
 
         # Get older transactions to find additional transfers by the same user"""
         for transaction in previous_signatures.value[i:]:
-            tx_funding_data = self._process_transactions(sig, transaction.transaction, transaction.slot, transaction.block_time, tx_data, is_funding_transaction=False)
+            tx = self.client.get_transaction(transaction.signature, max_supported_transaction_version=10).value
+            tx_funding_data = self._process_transactions(sig, tx.transaction, transaction.slot, transaction.block_time, tx_data, is_funding_transaction=False)
             
             if tx_funding_data is not None:
                 funding_data.append(tx_funding_data)
@@ -199,26 +209,35 @@ class SolanaScraper(BaseScraper):
     def _process_transactions(self, sig: str, tx: Transaction, block_or_slot: int, block_time: int, tx_data: TransactionData, is_funding_transaction: bool) -> FundingData:
         """Processes previous signatures to find funding transactions"""
         account_index = tx_data.signature_index
-        signers = [tx.transaction.message.account_keys[0].__str__()]
-        if len(tx.transaction.signatures) == 2:
-            signers.append(tx.transaction.message.account_keys[1].__str__())
+        
 
-        (credit, debit) = self.compute_token_transfer(
-            account_index, 
-            tx.meta, 
-            tx_data.token_info.token_address, 
-            tx_data.deposit_wallet,
-            signers
-        )
+        try:
+            signer = tx.transaction.message.account_keys[0].__str__()
+            (credit, debit) = self.compute_token_transfer(
+                account_index, 
+                tx.meta, 
+                tx_data.token_info.token_address, 
+                tx_data.deposit_wallet,
+                signer
+            )
+        except Exception as e:
+            signer = tx.transaction.message.account_keys[1].__str__()
+            (credit, debit) = self.compute_token_transfer(
+                account_index, 
+                tx.meta, 
+                tx_data.token_info.token_address, 
+                tx_data.deposit_wallet,
+                signer
+            )
 
         if not math.isclose(credit, debit, rel_tol=1e-9):
             logging.info(f"Skipping tx {sig} at slot {block_or_slot} due to credit and debit mismatch: {credit} != {debit}. Not a standard transaction.")
             return None
         else:
-            signer_token_accounts = [get_associated_token_account(signer, tx_data.token_info.token_address) for signer in signers]
+            signer_token_accounts = get_associated_token_account(signer, tx_data.token_info.token_address)
 
             return FundingData(
-                signers,
+                signer,
                 signer_token_accounts,
                 sig,
                 credit,
@@ -227,7 +246,14 @@ class SolanaScraper(BaseScraper):
                 is_funding_transaction
             )
 
-    def compute_token_transfer(self, account_index: int, meta: Dict[str, Any], mint: str, receiving_owner: str, funding_owners: List[str]) -> tuple[float, float]:
+    def compute_token_transfer(
+            self, 
+            account_index: int, 
+            meta: Dict[str, Any], 
+            mint: str, 
+            receiving_owner: str, 
+            funding_owner: str
+        ) -> tuple[float, float]:
         """
         Compute token transfer amounts and validate ownership/mint
         Returns: (credit, debit) tuple
@@ -249,13 +275,13 @@ class SolanaScraper(BaseScraper):
         for balance in meta.pre_token_balances:
             if balance.account_index == account_index:
                 balances['pre_receiver'] = validate_and_get_balance(balance, 'receiver')
-            if balance.owner.__str__() in funding_owners:
+            if balance.owner.__str__() in funding_owner:
                 balances['pre_sender'] = validate_and_get_balance(balance, 'sender')
 
         for balance in meta.post_token_balances:
             if balance.account_index == account_index:
                 balances['post_receiver'] = validate_and_get_balance(balance, 'receiver')
-            if balance.owner.__str__() in funding_owners:
+            if balance.owner.__str__() in funding_owner:
                 balances['post_sender'] = validate_and_get_balance(balance, 'sender')
 
         credit = balances['post_receiver'] - balances['pre_receiver']

@@ -33,13 +33,13 @@ def main():
         logging.info("Application started")
 
         # Initialize scrapers
-        eth_wallets = get_exchange_hot_wallets('ethereum')
+        # eth_wallets = get_exchange_hot_wallets('ethereum')
         sol_wallets = get_exchange_hot_wallets('solana')
 
         # Pass config and specify which EVM chain to use
-        eth_scraper = EVMScraper(eth_wallets, 'ethereum', config.config)
-        pol_scraper = EVMScraper(eth_wallets, 'polygon', config.config)
-        sol_scraper = SolanaScraper(sol_wallets, config.config)
+        # eth_scraper = EVMScraper(eth_wallets, 'ethereum', config.config)
+        # pol_scraper = EVMScraper(eth_wallets, 'polygon', config.config)
+        sol_scraper = SolanaScraper(sol_wallets, config.config, logging)
 
         # Connect to nodes
         # eth_scraper.connect()
@@ -49,17 +49,17 @@ def main():
         # Get latest transactions
         # eth_transactions = eth_scraper.get_latest_transactions()
         # slot = self.client.get_slot().value 
-        sol_scraper.parse_blocks(start_block_or_slot=315053829)
+        sol_scraper.parse_blocks()
 
         # Initialize repository and store deposit addresses
         deposit_repo = DepositAddressRepository(config.config["storage"]["deposit_addresses_path"])
-        deposit_repo.save_deposit_addresses(sol_scraper.potential_deposit_addresses)
+        deposit_data = deposit_repo.save_deposit_addresses(sol_scraper.potential_deposit_addresses)
             
         # logging.info(f"Found {len(eth_transactions)} Ethereum transactions")
         logging.info(f"Found {len(sol_scraper.potential_deposit_addresses)} potential Solana deposit addresses")
 
         # Compute metrics
-        sol_scraper.metrics.update_metrics(sol_scraper.potential_deposit_addresses)
+        sol_scraper.metrics.compute_metrics(deposit_data)
 
         logging.info("Application finished")
         

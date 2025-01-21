@@ -12,7 +12,14 @@ class DepositAddressRepository:
         logging.info(f"Initializing DepositAddressRepository with path: {self.storage_path}")
         self.storage_path.mkdir(exist_ok=True)
 
-    def save_deposit_addresses(self, tx_data_list: List[TransactionData]):
+    def save_deposit_addresses(self, tx_data_list: List[TransactionData]) -> dict:
+        """
+        Saves the deposit addresses to a JSON file.
+        
+        Args:
+            tx_data_list: List of TransactionData objects to save
+        """
+            
         if not tx_data_list:
             logging.warning("No deposit addresses to save - empty list provided")
             return
@@ -59,6 +66,26 @@ class DepositAddressRepository:
             with open(file_path, 'w') as f:
                 json.dump(serializable_data, f, indent=2)
             logging.info(f"Successfully saved {len(serializable_data)} deposit addresses to {file_path}")
+            return serializable_data
         except Exception as e:
             logging.error(f"Error saving deposit addresses: {e}")
             raise
+
+    def get_latest_deposit_file(self) -> Path:
+        """
+        Gets the most recent deposit addresses file based on the timestamp in the filename.
+        
+        Returns:
+            Path to the most recent file
+        """
+        files = list(self.storage_path.glob("deposit_addresses_*.json"))
+        if not files:
+            raise FileNotFoundError(f"No deposit address files found in {self.storage_path}")
+            
+        # Extract datetime from filename and use it to find the most recent file
+        latest_file = max(
+            files,
+            key=lambda f: datetime.fromisoformat(f.stem.replace('deposit_addresses_', ''))
+        )
+        
+        return latest_file
