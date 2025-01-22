@@ -53,10 +53,10 @@ To collect new deposit addresses:
     python src/main.py
 ```
 
-To only run the metrics computation using the json data:
+To only run the metrics computation using the existing json data:
 ```bash
 python src/run_metrics.py
-```## Running Tests
+```
 
 To run the tests:
 ```bash
