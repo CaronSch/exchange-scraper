@@ -46,6 +46,27 @@ solana:
       address: "Es9vMFrzaCERmJfrF4H2FYD4KCo4Zxj8vjPPVBRdYxU"
 ```
 
+Set known exchange hot wallets in `hot_wallets.yaml`.
+```
+ethereum:
+  coinbase:
+    - "0x742d35Cc6634C0532925a3b844Bc454e4438f44e"
+    - "0x123d35Cc6634C0532925a3b844Bc454e4438f789"
+  binance:
+    - "0x987d35Cc6634C0532925a3b844Bc454e4438fabc"
+    - "0x456d35Cc6634C0532925a3b844Bc454e4438fdef"
+
+solana:
+  coinbase:
+    - "H8sMJSCQxfKiFTCfDR3DUMLPwcRbM61LGFJ8N4dK3WjS"
+    - "2AQdpHJ2JpcEgPiATUXjQxA8QmafFegfQwSLWSprPicm"
+    - "GJRs4FwHtemZ5ZE9x3FNvJ8TMwitKTh21yxdRPqn7npE"
+  binance:
+    - "2ojv9BAiHUrvsm9gxDe7fJSzbNZSJcxZvf8dqmWGHG8S"
+    - "5tzFkiKscXHK5ZXCGbXZxdw7gTjjD1mBwuoFbhUvuAi9" 
+    - "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"
+```
+
 ## Usage
 
 To collect new deposit addresses:
