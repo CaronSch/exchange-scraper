@@ -26,13 +26,37 @@ pip install -r requirements.txt
 cp config.yaml.template config.yaml
 ```
 
-Edit `config.yaml` with your specific settings.
+Edit `config.yaml` with your specific settings, specifically at which slot to start scraping, the distance to scrape, and the tokens to scrape.
+
+Example config.yaml:
+```
+solana:
+  start_block: 315053829 
+  blocks_to_parse: 1000
+  url: "https://svc.blockdaemon.com/solana/mainnet/native"
+  api_key: "<API_KEY>"
+  api_type: "bearer"
+  rps_limit: 5
+  tokens:
+    - ticker: TRUMP
+      address: "6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN"
+    - ticker: USDC
+      address: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    - ticker: USDT
+      address: "Es9vMFrzaCERmJfrF4H2FYD4KCo4Zxj8vjPPVBRdYxU"
+```
 
 ## Usage
 
-tbd
+To collect new deposit addresses:
+```bash
+    python src/main.py
+```
 
-## Running Tests
+To only run the metrics computation using the json data:
+```bash
+python src/run_metrics.py
+```## Running Tests
 
 To run the tests:
 ```bash

@@ -5,16 +5,38 @@ app:
   
 # RPC Configuration
 solana:
-  url: "<SOLANA_RPC_URL>"
-  api_key: "<SOLANA_API_KEY>"
-  api_type: "<SOLANA_API_TYPE>"
+  start_block: 315053829 #315054113 #315054117
+  blocks_to_parse: 1000
+  url: "https://svc.blockdaemon.com/solana/mainnet/native"
+  api_key: "zpka_97866d8327714bd58ede013d98e1c63f_495322cd"
+  api_type: "bearer"
+  rps_limit: 5
+  tokens:
+    - ticker: TRUMP
+      address: "6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN"
+    - ticker: USDC
+      address: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    - ticker: USDT
+      address: "Es9vMFrzaCERmJfrF4H2FYD4KCo4Zxj8vjPPVBRdYxU"
 
-ethereum:
-  url: "<ETHEREUM_RPC_URL>"
-  api_key: "<ETHEREUM_API_KEY>"
-  api_type: "<ETHEREUM_API_TYPE>"
+evm:
+  ethereum:
+    url: "https://svc.blockdaemon.com/ethereum/mainnet/native"
+    api_key: "zpka_97866d8327714bd58ede013d98e1c63f_495322cd"
+    api_type: "param"
+    rps_limit: 1
+  polygon:
+    url: "https://svc.blockdaemon.com/polygon/mainnet/native"
+    api_key: "zpka_97866d8327714bd58ede013d98e1c63f_495322cd"
+    api_type: "bearer"
+    rps_limit: 1
+
+storage:
+  deposit_addresses_path: "data"
 
 # Logging Configuration
 logging:
   level: "INFO"
   file: "app.log"
+  format: "%(asctime)s - %(levelname)s - %(message)s"
+  datefmt: "%Y-%m-%d %H:%M:%S"
