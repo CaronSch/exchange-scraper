@@ -104,12 +104,16 @@ class DepositMetrics:
                     'senders': senders
                 }
 
-            sweep_time = deposit['block_time']
+            timestamp = deposit['block_time']
             if 'sweep' in time_series_stats:
-                time_series_stats['sweep'][sweep_time] += deposit['change']
+                if timestamp in time_series_stats['sweep']:
+                    time_series_stats['sweep'][timestamp] += deposit['change']
+                else:
+                    time_series_stats['sweep'][timestamp] = deposit['change']
             else:
-                time_series_stats['sweep'] = {}
-                time_series_stats['sweep'][sweep_time] = deposit['change']
+                time_series_stats['sweep'] = {
+                    timestamp: deposit['change']
+                }
 
             for fund_tx in sweep_txs:
                 timestamp = fund_tx['block_time']
@@ -241,7 +245,7 @@ class DepositMetrics:
         
         plt.close()
 
-    def plot_wallet_network(self, deposit_mapping: Dict[str, List[str]], top_deposits: List[dict], save_path: str = None, max_nodes: int = 50):
+    def plot_wallet_network(self, deposit_mapping: Dict[str, List[str]], top_deposits: List[dict], save_path: str = None, max_nodes: int = 20):
         """
         Creates a network visualization of deposit wallets and their funding addresses.
         
@@ -278,7 +282,7 @@ class DepositMetrics:
                        is_top=is_top)  # Truncate address for readability
             
             # Add funding wallet nodes and edges
-            for funding_wallet in deposit_mapping[deposit_wallet][:5]:  # Limit to 5 funding wallets per deposit
+            for funding_wallet in deposit_mapping[deposit_wallet][:8]:  # Limit to 8 funding wallets per deposit
                 funding_id = funding_wallet[:8] + "..."
                 G.add_node(funding_id, node_type="funding")
                 G.add_edge(deposit_wallet[:8] + "...", funding_id)
@@ -286,15 +290,14 @@ class DepositMetrics:
         plt.figure(figsize=(15, 10))
         
         # Create layout
-        pos = nx.spring_layout(G, k=1, iterations=50)
-        
-        # Draw nodes with different colors for top deposits
         top_deposit_nodes = [node for node, attr in G.nodes(data=True) 
                             if attr.get("node_type") == "deposit" and attr.get("is_top")]
         other_deposit_nodes = [node for node, attr in G.nodes(data=True) 
                               if attr.get("node_type") == "deposit" and not attr.get("is_top")]
         funding_nodes = [node for node, attr in G.nodes(data=True) 
                         if attr.get("node_type") == "funding"]
+        deposit_nodes = top_deposit_nodes + other_deposit_nodes
+        pos = nx.circular_layout(G)  # Places nodes in a circle
         
         # Draw top deposit nodes in red
         nx.draw_networkx_nodes(G, pos, 
@@ -302,7 +305,7 @@ class DepositMetrics:
                               node_color='lightcoral',
                               node_size=1200,
                               alpha=0.7,
-                              label='Top Deposit Wallets')
+                              label='Top Deposit Addresses')
         
         # Draw other deposit nodes in blue
         nx.draw_networkx_nodes(G, pos, 
@@ -310,7 +313,7 @@ class DepositMetrics:
                               node_color='lightblue',
                               node_size=1000,
                               alpha=0.7,
-                              label='Other Deposit Wallets')
+                              label='Other Deposit Addresses')
         
         # Draw funding nodes in green
         nx.draw_networkx_nodes(G, pos,
@@ -318,7 +321,7 @@ class DepositMetrics:
                               node_color='lightgreen',
                               node_size=700,
                               alpha=0.7,
-                              label='Funding Wallets')
+                              label='User Funding Addresses')
         
         # Draw edges
         nx.draw_networkx_edges(G, pos, alpha=0.4)

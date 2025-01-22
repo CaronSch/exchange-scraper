@@ -192,7 +192,7 @@ class SolanaScraper(BaseScraper):
         tx_data.probability_of_deposit_address = sum_of_previous_transfers / tx_data.change
         logging.info(f"Found deposit token account {tx_data.deposit_token_account} with probability {tx_data.probability_of_deposit_address}")
 
-        # Get older transactions to find additional transfers by the same user"""
+        # Get older transactions to find additional transfers by the same user
         for transaction in previous_signatures.value[i:]:
             tx = self.client.get_transaction(transaction.signature, max_supported_transaction_version=10).value
             tx_funding_data = self._process_transactions(sig, tx.transaction, transaction.slot, transaction.block_time, tx_data, is_funding_transaction=False)

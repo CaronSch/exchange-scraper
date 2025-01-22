@@ -10,9 +10,9 @@ def compute_metrics():
                            reverse=True)
     
     # Get top 10 deposits
-    top_deposits = sorted_deposits[:10]
+    top_deposits = sorted_deposits[:20]
     
-    logging.info("Top 10 deposits by volume:")
+    logging.info("Top 20 deposits by volume:")
     for i, deposit in enumerate(top_deposits, 1):
         logging.info(f"{i}. Wallet: {deposit['deposit_wallet']}, "
                     f"Volume: {deposit['change']:.2f} {deposit['token_info']['ticker']}, "
@@ -28,7 +28,7 @@ def compute_metrics():
     deposit_metrics.plot_time_series(timeseries, "time_series.png")
     logging.info("Created time series plot `time_series.png`")
 
-    deposit_metrics.plot_wallet_network(deposit_mapping, save_path="wallet_network.png")
+    deposit_metrics.plot_wallet_network(deposit_mapping, top_deposits, save_path="wallet_network.png")
     logging.info("Created wallet network plot `wallet_network.png`")
 
 if __name__ == "__main__":
